@@ -16,18 +16,17 @@
     <div class="app">
       <header class="app-header">
         <div>
-          <p class="eyebrow">Camera Tools</p>
-          <h1>QR Scanner</h1>
-          <p class="subtitle">Fast, local scanning with a future-proof foundation.</p>
+          <p class="eyebrow">Aadhaar QR</p>
+          <h1>Aadhaar Scanner</h1>
         </div>
-        <div class="status" id="status" role="status" aria-live="polite">Idle</div>
+        <div class="status" id="status" role="status" aria-live="polite">Initializing...</div>
       </header>
 
       <section class="panel">
         <div class="panel-header">
-          <h2>Live View</h2>
+          <h2>Live Scan</h2>
           <div class="badges">
-            <span class="badge" id="capabilityBadge">Checking compatibility...</span>
+            <span class="badge" id="capabilityBadge">Checking camera...</span>
           </div>
         </div>
         <div class="video-wrap">
@@ -36,44 +35,35 @@
             <div class="scan-line"></div>
           </div>
         </div>
-        <div class="controls">
-          <button id="startBtn" class="primary">Start Scan</button>
-          <button id="stopBtn" disabled>Stop</button>
-          <button id="torchBtn" disabled>Toggle Torch</button>
-        </div>
-        <p class="hint" id="hint">Point the camera at a QR code. Scanning happens locally in your browser.</p>
       </section>
 
-      <section class="panel grid">
-        <div>
-          <div class="panel-header">
-            <h2>Latest Result</h2>
-            <div class="badges">
-              <span class="badge neutral" id="resultBadge">No scans yet</span>
-            </div>
-          </div>
-          <div class="result-card">
-            <code id="resultText">-</code>
-            <div class="result-actions">
-              <button id="copyBtn" disabled>Copy</button>
-              <button id="clearBtn">Clear</button>
-            </div>
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Aadhaar Records</h2>
+          <div class="badges">
+            <span class="badge neutral" id="recordsBadge">0 records</span>
           </div>
         </div>
-        <div>
-          <div class="panel-header">
-            <h2>History</h2>
-            <div class="badges">
-              <span class="badge neutral" id="historyBadge">0 items</span>
-            </div>
-          </div>
-          <ul class="history" id="historyList"></ul>
+        <div class="table-wrap">
+          <table class="records-table" aria-live="polite">
+            <thead>
+              <tr>
+                <th>UID / Ref ID</th>
+                <th>Name</th>
+                <th>Gender</th>
+                <th>DOB / YoB</th>
+                <th>Address</th>
+                <th>Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="recordsBody">
+              <tr class="empty-row">
+                <td colspan="6">No scans yet.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
-
-      <footer class="app-footer">
-        <p>Designed for easy expansion: add parsers, analytics, or backend sync without rewrites.</p>
-      </footer>
     </div>
 
     <script src="vendor/jsqr.min.js"></script>

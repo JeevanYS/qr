@@ -1,9 +1,8 @@
-﻿'use strict';
+'use strict';
 
 const config = {
   preferredFacingMode: 'environment',
   scanIntervalMs: 200,
-  maxHistory: 20,
   duplicateCooldownMs: 1200,
   maxScanWidth: 640
 };
@@ -12,31 +11,22 @@ const el = {
   video: document.getElementById('camera'),
   status: document.getElementById('status'),
   capabilityBadge: document.getElementById('capabilityBadge'),
-  startBtn: document.getElementById('startBtn'),
-  stopBtn: document.getElementById('stopBtn'),
-  torchBtn: document.getElementById('torchBtn'),
-  hint: document.getElementById('hint'),
-  resultText: document.getElementById('resultText'),
-  resultBadge: document.getElementById('resultBadge'),
-  copyBtn: document.getElementById('copyBtn'),
-  clearBtn: document.getElementById('clearBtn'),
-  historyList: document.getElementById('historyList'),
-  historyBadge: document.getElementById('historyBadge')
+  recordsBody: document.getElementById('recordsBody'),
+  recordsBadge: document.getElementById('recordsBadge')
 };
 
 const state = {
   scanning: false,
-  torchEnabled: false,
   lastValue: null,
   lastValueTs: 0,
-  history: []
+  records: new Map(),
+  order: []
 };
 
 class CameraManager {
   constructor(videoEl) {
     this.videoEl = videoEl;
     this.stream = null;
-    this.track = null;
   }
 
   async start() {
@@ -54,7 +44,6 @@ class CameraManager {
     });
 
     this.videoEl.srcObject = this.stream;
-    this.track = this.stream.getVideoTracks()[0] || null;
     await this.videoEl.play().catch(() => undefined);
   }
 
@@ -63,30 +52,7 @@ class CameraManager {
       this.stream.getTracks().forEach((track) => track.stop());
     }
     this.stream = null;
-    this.track = null;
     this.videoEl.srcObject = null;
-  }
-
-  getTorchCapabilities() {
-    if (!this.track || !this.track.getCapabilities) {
-      return { supported: false };
-    }
-    const capabilities = this.track.getCapabilities();
-    return { supported: Boolean(capabilities.torch) };
-  }
-
-  async setTorch(enabled) {
-    if (!this.track || !this.track.applyConstraints) {
-      return false;
-    }
-    try {
-      await this.track.applyConstraints({
-        advanced: [{ torch: enabled }]
-      });
-      return true;
-    } catch (error) {
-      return false;
-    }
   }
 }
 
@@ -109,10 +75,6 @@ class QrScanner {
 
   isJsQrSupported() {
     return typeof window.jsQR === 'function';
-  }
-
-  isSupported() {
-    return this.isBarcodeSupported() || this.isJsQrSupported();
   }
 
   async initDetector() {
@@ -142,6 +104,10 @@ class QrScanner {
     }
   }
 
+  deliver(value) {
+    Promise.resolve(this.onResult(value)).catch(() => undefined);
+  }
+
   async scanWithBarcodeDetector() {
     if (!this.detector) {
       return;
@@ -154,7 +120,7 @@ class QrScanner {
     if (!value) {
       return;
     }
-    this.onResult(value);
+    this.deliver(value);
   }
 
   scanWithJsQr() {
@@ -174,7 +140,7 @@ class QrScanner {
     const imageData = this.ctx.getImageData(0, 0, targetWidth, targetHeight);
     const result = window.jsQR(imageData.data, targetWidth, targetHeight);
     if (result && result.data) {
-      this.onResult(result.data);
+      this.deliver(result.data);
     }
   }
 
@@ -204,43 +170,400 @@ class QrScanner {
 
 const camera = new CameraManager(el.video);
 const scanner = new QrScanner(el.video, handleScanResult);
+const textDecoder = new TextDecoder('iso-8859-1');
+let awaitingGesture = false;
 
 function setStatus(message, tone) {
   el.status.textContent = message;
   el.status.style.color = tone === 'error' ? 'var(--danger)' : 'var(--muted)';
 }
 
-function setBadge(message, tone) {
-  el.resultBadge.textContent = message;
-  if (tone === 'success') {
-    el.resultBadge.classList.remove('neutral');
-  } else {
-    el.resultBadge.classList.add('neutral');
+function formatLastSeen(date) {
+  return date.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+function formatUid(value) {
+  if (!value) {
+    return '';
+  }
+  const digits = value.replace(/\s+/g, '');
+  if (!/^\d{12}$/.test(digits)) {
+    return value;
+  }
+  return digits.replace(/(\d{4})(?=\d)/g, '$1 ');
+}
+
+function normalizeGender(value) {
+  const cleaned = (value || '').trim();
+  if (!cleaned) {
+    return '';
+  }
+  const lower = cleaned.toLowerCase();
+  if (lower.startsWith('m')) {
+    return 'Male';
+  }
+  if (lower.startsWith('f')) {
+    return 'Female';
+  }
+  if (lower.startsWith('t')) {
+    return 'Transgender';
+  }
+  return cleaned;
+}
+
+function cleanText(value) {
+  return (value || '').replace(/\s+/g, ' ').trim();
+}
+
+function joinAddress(parts) {
+  return parts
+    .map((part) => cleanText(part))
+    .filter(Boolean)
+    .join(', ');
+}
+
+function recordKey(record) {
+  return record.uid || record.referenceId || '';
+}
+
+function renderRecords() {
+  el.recordsBody.innerHTML = '';
+
+  if (!state.order.length) {
+    const row = document.createElement('tr');
+    row.className = 'empty-row';
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.textContent = 'No scans yet.';
+    row.appendChild(cell);
+    el.recordsBody.appendChild(row);
+    el.recordsBadge.textContent = '0 records';
+    return;
+  }
+
+  state.order.forEach((key) => {
+    const record = state.records.get(key);
+    if (!record) {
+      return;
+    }
+    const row = document.createElement('tr');
+
+    const idCell = document.createElement('td');
+    idCell.className = 'mono';
+    idCell.textContent = record.uid ? formatUid(record.uid) : `Ref ${record.referenceId || '-'}`;
+    row.appendChild(idCell);
+
+    const nameCell = document.createElement('td');
+    nameCell.textContent = record.name || '-';
+    row.appendChild(nameCell);
+
+    const genderCell = document.createElement('td');
+    genderCell.textContent = normalizeGender(record.gender) || '-';
+    row.appendChild(genderCell);
+
+    const dobCell = document.createElement('td');
+    dobCell.textContent = record.dob || record.yob || '-';
+    row.appendChild(dobCell);
+
+    const addressCell = document.createElement('td');
+    addressCell.textContent = record.address || '-';
+    row.appendChild(addressCell);
+
+    const seenCell = document.createElement('td');
+    seenCell.textContent = record.lastSeen || '-';
+    row.appendChild(seenCell);
+
+    el.recordsBody.appendChild(row);
+  });
+
+  el.recordsBadge.textContent = `${state.order.length} records`;
+}
+
+function upsertRecord(record) {
+  const key = recordKey(record);
+  if (!key) {
+    setStatus('UID not found in QR data.', 'error');
+    return;
+  }
+
+  const existing = state.records.get(key);
+  const now = new Date();
+  const next = {
+    ...existing,
+    ...record,
+    lastSeen: formatLastSeen(now)
+  };
+
+  state.records.set(key, next);
+  state.order = state.order.filter((item) => item !== key);
+  state.order.unshift(key);
+
+  renderRecords();
+  setStatus(existing ? 'Record updated.' : 'Record captured.');
+}
+
+function extractXml(raw) {
+  const start = raw.indexOf('<');
+  if (start === -1) {
+    return null;
+  }
+  return raw.slice(start).trim();
+}
+
+function parsePrintLetter(node) {
+  const attr = (name) => node.getAttribute(name) || '';
+  const uid = attr('uid');
+  const name = attr('name');
+  const gender = attr('gender');
+  const dob = attr('dob');
+  const yob = attr('yob');
+  const pin = attr('pc');
+  const address = joinAddress([
+    attr('co'),
+    attr('house'),
+    attr('street'),
+    attr('lm'),
+    attr('loc'),
+    attr('vtc'),
+    attr('po'),
+    attr('dist'),
+    attr('subdist'),
+    attr('state'),
+    pin
+  ]);
+
+  return {
+    uid,
+    name,
+    gender,
+    dob,
+    yob,
+    address,
+    pin,
+    source: 'PrintLetterBarcodeData'
+  };
+}
+
+function parseOfflinePaperless(root) {
+  const referenceId = root.getAttribute('referenceId') || root.getAttribute('referenceid') || '';
+  const poi = root.getElementsByTagName('Poi')[0];
+  const poa = root.getElementsByTagName('Poa')[0];
+
+  const name = poi ? poi.getAttribute('name') || '' : '';
+  const dob = poi ? poi.getAttribute('dob') || '' : '';
+  const yob = poi ? poi.getAttribute('yob') || '' : '';
+  const gender = poi ? poi.getAttribute('gender') || '' : '';
+  const pin = poa ? poa.getAttribute('pc') || '' : '';
+
+  const address = poa
+    ? joinAddress([
+        poa.getAttribute('house'),
+        poa.getAttribute('street'),
+        poa.getAttribute('lm'),
+        poa.getAttribute('loc'),
+        poa.getAttribute('vtc'),
+        poa.getAttribute('subdist'),
+        poa.getAttribute('dist'),
+        poa.getAttribute('state'),
+        pin,
+        poa.getAttribute('po')
+      ])
+    : '';
+
+  return {
+    referenceId,
+    name,
+    gender,
+    dob,
+    yob,
+    address,
+    pin,
+    source: 'OfflinePaperlessKyc'
+  };
+}
+
+function parseOkY(oky) {
+  const name = oky.getAttribute('n') || '';
+  const referenceId = oky.getAttribute('r') || '';
+  const dob = oky.getAttribute('d') || '';
+  const gender = oky.getAttribute('g') || '';
+  const address = oky.getAttribute('a') || '';
+
+  return {
+    referenceId,
+    name,
+    gender,
+    dob,
+    address,
+    source: 'OKY'
+  };
+}
+
+function parseXmlPayload(raw) {
+  const xmlText = extractXml(raw);
+  if (!xmlText) {
+    return null;
+  }
+
+  const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+  if (doc.getElementsByTagName('parsererror').length) {
+    return null;
+  }
+
+  const printNodes = doc.getElementsByTagName('PrintLetterBarcodeData');
+  if (printNodes.length) {
+    return parsePrintLetter(printNodes[0]);
+  }
+
+  const offlineNodes = doc.getElementsByTagName('OfflinePaperlessKyc');
+  if (offlineNodes.length) {
+    return parseOfflinePaperless(offlineNodes[0]);
+  }
+
+  const okyNodes = doc.getElementsByTagName('OKY');
+  if (okyNodes.length) {
+    return parseOkY(okyNodes[0]);
+  }
+
+  return null;
+}
+
+function bigIntToBytes(value) {
+  if (value === 0n) {
+    return new Uint8Array([0]);
+  }
+  const bytes = [];
+  let temp = value;
+  while (temp > 0n) {
+    bytes.unshift(Number(temp & 0xffn));
+    temp >>= 8n;
+  }
+  return new Uint8Array(bytes);
+}
+
+async function inflateBytes(bytes) {
+  if (!('DecompressionStream' in window)) {
+    return null;
+  }
+  try {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+    const buffer = await new Response(stream).arrayBuffer();
+    return new Uint8Array(buffer);
+  } catch (error) {
+    return null;
   }
 }
 
-function updateHistory() {
-  el.historyList.innerHTML = '';
-  state.history.forEach((entry) => {
-    const item = document.createElement('li');
-    const time = document.createElement('div');
-    const value = document.createElement('div');
-    time.className = 'time';
-    value.className = 'value';
-    time.textContent = entry.time;
-    value.textContent = entry.value;
-    item.appendChild(time);
-    item.appendChild(value);
-    el.historyList.appendChild(item);
-  });
-  el.historyBadge.textContent = `${state.history.length} items`;
+function parseSecureQrBytes(bytes) {
+  const fields = [];
+  let start = 0;
+
+  for (let i = 0; i < bytes.length && fields.length < 16; i += 1) {
+    if (bytes[i] === 255) {
+      fields.push(bytes.slice(start, i));
+      start = i + 1;
+    }
+  }
+
+  if (fields.length < 16) {
+    return null;
+  }
+
+  const decoded = fields.map((chunk) => cleanText(textDecoder.decode(chunk)));
+  const [
+    indicator,
+    referenceId,
+    name,
+    dob,
+    gender,
+    careOf,
+    district,
+    landmark,
+    house,
+    location,
+    pin,
+    postOffice,
+    state,
+    street,
+    subDistrict,
+    vtc
+  ] = decoded;
+
+  if (!indicator || !referenceId) {
+    return null;
+  }
+
+  const address = joinAddress([
+    careOf,
+    house,
+    street,
+    landmark,
+    location,
+    vtc,
+    subDistrict,
+    district,
+    state,
+    pin,
+    postOffice
+  ]);
+
+  return {
+    referenceId,
+    name,
+    gender,
+    dob,
+    address,
+    pin,
+    source: 'Secure QR'
+  };
 }
 
-function formatTime(date) {
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+async function parseSecureQr(raw) {
+  const digits = raw.replace(/\s+/g, '');
+  if (!/^\d{50,}$/.test(digits)) {
+    return null;
+  }
+  let big;
+  try {
+    big = BigInt(digits);
+  } catch (error) {
+    return null;
+  }
+
+  const bytes = bigIntToBytes(big);
+  const inflated = await inflateBytes(bytes);
+  if (!inflated) {
+    return null;
+  }
+  return parseSecureQrBytes(inflated);
 }
 
-function handleScanResult(value) {
+async function parseAadhaarPayload(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const xmlRecord = parseXmlPayload(trimmed);
+  if (xmlRecord) {
+    return xmlRecord;
+  }
+
+  const secureRecord = await parseSecureQr(trimmed);
+  if (secureRecord) {
+    return secureRecord;
+  }
+
+  return null;
+}
+
+async function handleScanResult(value) {
   const now = Date.now();
   if (value === state.lastValue && now - state.lastValueTs < config.duplicateCooldownMs) {
     return;
@@ -248,50 +571,85 @@ function handleScanResult(value) {
   state.lastValue = value;
   state.lastValueTs = now;
 
-  el.resultText.textContent = value;
-  setBadge('Scan captured', 'success');
-  el.copyBtn.disabled = false;
+  const compact = (value || '').replace(/\s+/g, '');
+  const looksNumeric = /^\d{50,}$/.test(compact);
+  if (looksNumeric && !('DecompressionStream' in window)) {
+    setStatus('Secure QR needs a compatible browser to decode.', 'error');
+    return;
+  }
 
-  state.history.unshift({
-    value,
-    time: formatTime(new Date())
-  });
-  state.history = state.history.slice(0, config.maxHistory);
-  updateHistory();
+  const record = await parseAadhaarPayload(value);
+  if (!record) {
+    setStatus(looksNumeric ? 'Secure QR could not be decoded.' : 'Not an Aadhaar QR format.', 'error');
+    return;
+  }
+
+  upsertRecord(record);
 }
 
-function ensureSecureContext() {
-  if (window.isSecureContext) {
+function updateCapabilityBadge() {
+  if (!window.isSecureContext) {
+    el.capabilityBadge.textContent = 'Requires HTTPS';
+    el.capabilityBadge.classList.add('neutral');
+    return false;
+  }
+
+  if (scanner.isBarcodeSupported()) {
+    el.capabilityBadge.textContent = 'BarcodeDetector ready';
+    el.capabilityBadge.classList.remove('neutral');
     return true;
   }
-  setStatus('Secure context required', 'error');
-  el.hint.textContent = 'Camera access needs https:// or http://localhost on Android.';
-  el.startBtn.disabled = true;
+
+  if (scanner.isJsQrSupported()) {
+    el.capabilityBadge.textContent = 'Fallback ready (jsQR)';
+    el.capabilityBadge.classList.remove('neutral');
+    return true;
+  }
+
+  el.capabilityBadge.textContent = 'Scanner not supported';
+  el.capabilityBadge.classList.add('neutral');
   return false;
+}
+
+function queueGestureStart() {
+  if (awaitingGesture) {
+    return;
+  }
+  awaitingGesture = true;
+  document.addEventListener(
+    'click',
+    async () => {
+      awaitingGesture = false;
+      await startScan();
+    },
+    { once: true }
+  );
 }
 
 async function startScan() {
   if (state.scanning) {
     return;
   }
-
-  if (!ensureSecureContext()) {
+  if (!window.isSecureContext) {
+    setStatus('Secure context required.', 'error');
     return;
   }
-
   try {
     setStatus('Requesting camera access...');
     await camera.start();
     state.scanning = true;
-    el.startBtn.disabled = true;
-    el.stopBtn.disabled = false;
-
-    const torchCap = camera.getTorchCapabilities();
-    el.torchBtn.disabled = !torchCap.supported;
-
     setStatus('Scanning...');
     scanner.start();
   } catch (error) {
+    if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+      setStatus('Camera permission required. Tap to allow.', 'error');
+      queueGestureStart();
+      return;
+    }
+    if (error && error.name === 'NotFoundError') {
+      setStatus('No camera found.', 'error');
+      return;
+    }
     setStatus(error.message || 'Unable to access camera.', 'error');
   }
 }
@@ -303,85 +661,9 @@ function stopScan() {
   scanner.stop();
   camera.stop();
   state.scanning = false;
-  state.torchEnabled = false;
-  el.startBtn.disabled = false;
-  el.stopBtn.disabled = true;
-  el.torchBtn.disabled = true;
-  setStatus('Idle');
-}
-
-async function toggleTorch() {
-  const nextValue = !state.torchEnabled;
-  const applied = await camera.setTorch(nextValue);
-  if (applied) {
-    state.torchEnabled = nextValue;
-    setStatus(nextValue ? 'Torch enabled' : 'Torch disabled');
-  } else {
-    setStatus('Torch not available', 'error');
-  }
-}
-
-function clearResults() {
-  state.lastValue = null;
-  state.lastValueTs = 0;
-  el.resultText.textContent = '-';
-  setBadge('No scans yet');
-  el.copyBtn.disabled = true;
-  state.history = [];
-  updateHistory();
-}
-
-async function copyResult() {
-  const value = el.resultText.textContent;
-  if (!value || value === '-') {
-    return;
-  }
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    await navigator.clipboard.writeText(value);
-    setStatus('Copied to clipboard');
-  } else {
-    setStatus('Clipboard unavailable', 'error');
-  }
-}
-
-function updateCapabilityBadge() {
-  const hasBarcode = scanner.isBarcodeSupported();
-  const hasJsQr = scanner.isJsQrSupported();
-
-  if (!window.isSecureContext) {
-    el.capabilityBadge.textContent = 'Requires HTTPS';
-    el.capabilityBadge.classList.add('neutral');
-    el.startBtn.disabled = true;
-    el.hint.textContent = 'Camera access needs https:// or http://localhost on Android.';
-    return;
-  }
-
-  if (hasBarcode) {
-    el.capabilityBadge.textContent = 'BarcodeDetector ready';
-    el.capabilityBadge.classList.remove('neutral');
-    el.hint.textContent = 'Point the camera at a QR code. Scanning happens locally in your browser.';
-    return;
-  }
-
-  if (hasJsQr) {
-    el.capabilityBadge.textContent = 'Fallback ready (jsQR)';
-    el.capabilityBadge.classList.remove('neutral');
-    el.hint.textContent = 'Using a JavaScript fallback scanner. Keep the QR code centered and steady.';
-    return;
-  }
-
-  el.capabilityBadge.textContent = 'Scanner not supported';
-  el.capabilityBadge.classList.add('neutral');
-  el.startBtn.disabled = true;
-  el.hint.textContent = 'No supported QR scanner found. Try Chrome or Edge.';
 }
 
 function attachEvents() {
-  el.startBtn.addEventListener('click', startScan);
-  el.stopBtn.addEventListener('click', stopScan);
-  el.torchBtn.addEventListener('click', toggleTorch);
-  el.clearBtn.addEventListener('click', clearResults);
-  el.copyBtn.addEventListener('click', copyResult);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       stopScan();
@@ -404,17 +686,18 @@ function registerServiceWorker() {
 }
 
 async function init() {
-  updateCapabilityBadge();
-  if (!window.isSecureContext) {
-    setStatus('Secure context required', 'error');
+  const badgeOk = updateCapabilityBadge();
+  if (!badgeOk) {
+    setStatus('Scanner unavailable.', 'error');
     return;
   }
   const detectorReady = await scanner.initDetector();
   if (!detectorReady) {
-    setStatus('Scanner unavailable', 'error');
+    setStatus('Scanner unavailable.', 'error');
     return;
   }
-  setStatus('Ready');
+  setStatus('Ready.');
+  startScan().catch(() => undefined);
 }
 
 attachEvents();

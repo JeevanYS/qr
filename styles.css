@@ -80,11 +80,6 @@ h1 {
   box-shadow: 0 20px 40px var(--shadow);
 }
 
-.panel.grid {
-  display: grid;
-  gap: 20px;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-}
 
 .panel-header {
   display: flex;
@@ -165,105 +160,65 @@ video {
   }
 }
 
-.controls {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 18px;
-}
-
-button {
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  padding: 10px 16px;
-  min-height: 44px;
-  border-radius: 10px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-  touch-action: manipulation;
-}
-
-button:hover:enabled {
-  transform: translateY(-1px);
-  border-color: rgba(255, 179, 71, 0.5);
-  box-shadow: 0 8px 16px rgba(10, 12, 16, 0.45);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-button.primary {
-  background: linear-gradient(120deg, var(--accent), #ffd27a);
-  color: #1a1d24;
-  border-color: transparent;
-}
-
-.hint {
-  margin-top: 12px;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.result-card {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+.table-wrap {
+  width: 100%;
+  overflow: auto;
   border-radius: 16px;
-  padding: 16px;
-  display: grid;
-  gap: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
-.result-card code {
-  display: block;
+.records-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.records-table thead {
+  background: rgba(21, 27, 38, 0.95);
+}
+
+.records-table th,
+.records-table td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid rgba(46, 55, 74, 0.6);
+  vertical-align: top;
+}
+
+.records-table th {
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  position: sticky;
+  top: 0;
+  background: rgba(21, 27, 38, 0.98);
+}
+
+.records-table td {
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.records-table tr:nth-child(even) td {
+  background: rgba(15, 18, 24, 0.35);
+}
+
+.records-table .mono {
   font-family: "Source Code Pro", ui-monospace, monospace;
-  font-size: 0.95rem;
-  white-space: pre-wrap;
-  word-break: break-word;
   color: var(--accent-2);
 }
 
-.result-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.history {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 12px;
-}
-
-.history li {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 12px;
-  background: rgba(15, 18, 24, 0.6);
-}
-
-.history .time {
-  font-size: 0.75rem;
+.records-table .muted {
   color: var(--muted);
-  margin-bottom: 6px;
+  font-size: 0.8rem;
 }
 
-.history .value {
-  font-family: "Source Code Pro", ui-monospace, monospace;
-  font-size: 0.85rem;
-  color: var(--text);
-  word-break: break-word;
-}
-
-.app-footer {
+.empty-row td {
   text-align: center;
   color: var(--muted);
-  font-size: 0.85rem;
+  padding: 20px;
 }
 
 @media (max-width: 720px) {
