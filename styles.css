@@ -205,16 +205,6 @@ video {
   background: rgba(15, 18, 24, 0.35);
 }
 
-.records-table .mono {
-  font-family: "Source Code Pro", ui-monospace, monospace;
-  color: var(--accent-2);
-}
-
-.records-table .muted {
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
 .empty-row td {
   text-align: center;
   color: var(--muted);

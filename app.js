@@ -4,13 +4,13 @@ const config = {
   preferredFacingMode: 'environment',
   scanIntervalMs: 200,
   duplicateCooldownMs: 1200,
-  maxScanWidth: 640
+  maxScanWidth: 640,
+  storageKey: 'qr_records_v1'
 };
 
 const el = {
   video: document.getElementById('camera'),
   status: document.getElementById('status'),
-  capabilityBadge: document.getElementById('capabilityBadge'),
   recordsBody: document.getElementById('recordsBody'),
   recordsBadge: document.getElementById('recordsBadge')
 };
@@ -20,7 +20,8 @@ const state = {
   lastValue: null,
   lastValueTs: 0,
   records: new Map(),
-  order: []
+  order: [],
+  awaitingGesture: false
 };
 
 class CameraManager {
@@ -170,33 +171,10 @@ class QrScanner {
 
 const camera = new CameraManager(el.video);
 const scanner = new QrScanner(el.video, handleScanResult);
-const textDecoder = new TextDecoder('iso-8859-1');
-let awaitingGesture = false;
 
 function setStatus(message, tone) {
   el.status.textContent = message;
   el.status.style.color = tone === 'error' ? 'var(--danger)' : 'var(--muted)';
-}
-
-function formatLastSeen(date) {
-  return date.toLocaleString([], {
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-}
-
-function formatUid(value) {
-  if (!value) {
-    return '';
-  }
-  const digits = value.replace(/\s+/g, '');
-  if (!/^\d{12}$/.test(digits)) {
-    return value;
-  }
-  return digits.replace(/(\d{4})(?=\d)/g, '$1 ');
 }
 
 function normalizeGender(value) {
@@ -221,15 +199,32 @@ function cleanText(value) {
   return (value || '').replace(/\s+/g, ' ').trim();
 }
 
-function joinAddress(parts) {
-  return parts
-    .map((part) => cleanText(part))
-    .filter(Boolean)
-    .join(', ');
+function cleanPhone(value) {
+  if (!value) {
+    return '';
+  }
+  const digits = value.replace(/[^\d+]/g, '');
+  return digits;
+}
+
+function cleanEmail(value) {
+  return (value || '').trim().toLowerCase();
 }
 
 function recordKey(record) {
-  return record.uid || record.referenceId || '';
+  if (record.email) {
+    return `email:${record.email}`;
+  }
+  if (record.mobile) {
+    return `mobile:${record.mobile}`;
+  }
+  if (record.username && record.dob) {
+    return `user:${record.username.toLowerCase()}|${record.dob}`;
+  }
+  if (record.username) {
+    return `user:${record.username.toLowerCase()}`;
+  }
+  return '';
 }
 
 function renderRecords() {
@@ -247,6 +242,8 @@ function renderRecords() {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
+
   state.order.forEach((key) => {
     const record = state.records.get(key);
     if (!record) {
@@ -254,50 +251,65 @@ function renderRecords() {
     }
     const row = document.createElement('tr');
 
-    const idCell = document.createElement('td');
-    idCell.className = 'mono';
-    idCell.textContent = record.uid ? formatUid(record.uid) : `Ref ${record.referenceId || '-'}`;
-    row.appendChild(idCell);
-
-    const nameCell = document.createElement('td');
-    nameCell.textContent = record.name || '-';
-    row.appendChild(nameCell);
-
-    const genderCell = document.createElement('td');
-    genderCell.textContent = normalizeGender(record.gender) || '-';
-    row.appendChild(genderCell);
+    const userCell = document.createElement('td');
+    userCell.textContent = record.username || '-';
+    row.appendChild(userCell);
 
     const dobCell = document.createElement('td');
-    dobCell.textContent = record.dob || record.yob || '-';
+    dobCell.textContent = record.dob || '-';
     row.appendChild(dobCell);
 
-    const addressCell = document.createElement('td');
-    addressCell.textContent = record.address || '-';
-    row.appendChild(addressCell);
+    const ageCell = document.createElement('td');
+    ageCell.textContent = record.age || '-';
+    row.appendChild(ageCell);
 
-    const seenCell = document.createElement('td');
-    seenCell.textContent = record.lastSeen || '-';
-    row.appendChild(seenCell);
+    const genderCell = document.createElement('td');
+    genderCell.textContent = record.gender || '-';
+    row.appendChild(genderCell);
 
-    el.recordsBody.appendChild(row);
+    const mobileCell = document.createElement('td');
+    mobileCell.textContent = record.mobile || '-';
+    row.appendChild(mobileCell);
+
+    const emailCell = document.createElement('td');
+    emailCell.textContent = record.email || '-';
+    row.appendChild(emailCell);
+
+    fragment.appendChild(row);
   });
 
+  el.recordsBody.appendChild(fragment);
   el.recordsBadge.textContent = `${state.order.length} records`;
+}
+
+function saveRecords() {
+  const payload = state.order.map((key) => {
+    const record = state.records.get(key);
+    return record ? { key, ...record } : null;
+  }).filter(Boolean);
+
+  try {
+    localStorage.setItem(config.storageKey, JSON.stringify(payload));
+  } catch (error) {
+    setStatus('Storage full. Unable to save more records.', 'error');
+  }
 }
 
 function upsertRecord(record) {
   const key = recordKey(record);
   if (!key) {
-    setStatus('UID not found in QR data.', 'error');
+    setStatus('Missing unique fields for de-duplication.', 'error');
     return;
   }
 
-  const existing = state.records.get(key);
-  const now = new Date();
+  const existing = state.records.get(key) || {};
   const next = {
-    ...existing,
-    ...record,
-    lastSeen: formatLastSeen(now)
+    username: record.username || existing.username || '',
+    dob: record.dob || existing.dob || '',
+    age: record.age || existing.age || '',
+    gender: record.gender || existing.gender || '',
+    mobile: record.mobile || existing.mobile || '',
+    email: record.email || existing.email || ''
   };
 
   state.records.set(key, next);
@@ -305,262 +317,118 @@ function upsertRecord(record) {
   state.order.unshift(key);
 
   renderRecords();
-  setStatus(existing ? 'Record updated.' : 'Record captured.');
+  saveRecords();
+  setStatus(existing.username || existing.email || existing.mobile ? 'Record updated.' : 'Record stored.');
 }
 
-function extractXml(raw) {
-  const start = raw.indexOf('<');
-  if (start === -1) {
-    return null;
-  }
-  return raw.slice(start).trim();
-}
-
-function parsePrintLetter(node) {
-  const attr = (name) => node.getAttribute(name) || '';
-  const uid = attr('uid');
-  const name = attr('name');
-  const gender = attr('gender');
-  const dob = attr('dob');
-  const yob = attr('yob');
-  const pin = attr('pc');
-  const address = joinAddress([
-    attr('co'),
-    attr('house'),
-    attr('street'),
-    attr('lm'),
-    attr('loc'),
-    attr('vtc'),
-    attr('po'),
-    attr('dist'),
-    attr('subdist'),
-    attr('state'),
-    pin
-  ]);
-
-  return {
-    uid,
-    name,
-    gender,
-    dob,
-    yob,
-    address,
-    pin,
-    source: 'PrintLetterBarcodeData'
-  };
-}
-
-function parseOfflinePaperless(root) {
-  const referenceId = root.getAttribute('referenceId') || root.getAttribute('referenceid') || '';
-  const poi = root.getElementsByTagName('Poi')[0];
-  const poa = root.getElementsByTagName('Poa')[0];
-
-  const name = poi ? poi.getAttribute('name') || '' : '';
-  const dob = poi ? poi.getAttribute('dob') || '' : '';
-  const yob = poi ? poi.getAttribute('yob') || '' : '';
-  const gender = poi ? poi.getAttribute('gender') || '' : '';
-  const pin = poa ? poa.getAttribute('pc') || '' : '';
-
-  const address = poa
-    ? joinAddress([
-        poa.getAttribute('house'),
-        poa.getAttribute('street'),
-        poa.getAttribute('lm'),
-        poa.getAttribute('loc'),
-        poa.getAttribute('vtc'),
-        poa.getAttribute('subdist'),
-        poa.getAttribute('dist'),
-        poa.getAttribute('state'),
-        pin,
-        poa.getAttribute('po')
-      ])
-    : '';
-
-  return {
-    referenceId,
-    name,
-    gender,
-    dob,
-    yob,
-    address,
-    pin,
-    source: 'OfflinePaperlessKyc'
-  };
-}
-
-function parseOkY(oky) {
-  const name = oky.getAttribute('n') || '';
-  const referenceId = oky.getAttribute('r') || '';
-  const dob = oky.getAttribute('d') || '';
-  const gender = oky.getAttribute('g') || '';
-  const address = oky.getAttribute('a') || '';
-
-  return {
-    referenceId,
-    name,
-    gender,
-    dob,
-    address,
-    source: 'OKY'
-  };
-}
-
-function parseXmlPayload(raw) {
-  const xmlText = extractXml(raw);
-  if (!xmlText) {
-    return null;
-  }
-
-  const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
-  if (doc.getElementsByTagName('parsererror').length) {
-    return null;
-  }
-
-  const printNodes = doc.getElementsByTagName('PrintLetterBarcodeData');
-  if (printNodes.length) {
-    return parsePrintLetter(printNodes[0]);
-  }
-
-  const offlineNodes = doc.getElementsByTagName('OfflinePaperlessKyc');
-  if (offlineNodes.length) {
-    return parseOfflinePaperless(offlineNodes[0]);
-  }
-
-  const okyNodes = doc.getElementsByTagName('OKY');
-  if (okyNodes.length) {
-    return parseOkY(okyNodes[0]);
-  }
-
-  return null;
-}
-
-function bigIntToBytes(value) {
-  if (value === 0n) {
-    return new Uint8Array([0]);
-  }
-  const bytes = [];
-  let temp = value;
-  while (temp > 0n) {
-    bytes.unshift(Number(temp & 0xffn));
-    temp >>= 8n;
-  }
-  return new Uint8Array(bytes);
-}
-
-async function inflateBytes(bytes) {
-  if (!('DecompressionStream' in window)) {
-    return null;
-  }
+function parseJsonPayload(raw) {
   try {
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
-    const buffer = await new Response(stream).arrayBuffer();
-    return new Uint8Array(buffer);
-  } catch (error) {
-    return null;
-  }
-}
-
-function parseSecureQrBytes(bytes) {
-  const fields = [];
-  let start = 0;
-
-  for (let i = 0; i < bytes.length && fields.length < 16; i += 1) {
-    if (bytes[i] === 255) {
-      fields.push(bytes.slice(start, i));
-      start = i + 1;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
     }
-  }
-
-  if (fields.length < 16) {
-    return null;
-  }
-
-  const decoded = fields.map((chunk) => cleanText(textDecoder.decode(chunk)));
-  const [
-    indicator,
-    referenceId,
-    name,
-    dob,
-    gender,
-    careOf,
-    district,
-    landmark,
-    house,
-    location,
-    pin,
-    postOffice,
-    state,
-    street,
-    subDistrict,
-    vtc
-  ] = decoded;
-
-  if (!indicator || !referenceId) {
-    return null;
-  }
-
-  const address = joinAddress([
-    careOf,
-    house,
-    street,
-    landmark,
-    location,
-    vtc,
-    subDistrict,
-    district,
-    state,
-    pin,
-    postOffice
-  ]);
-
-  return {
-    referenceId,
-    name,
-    gender,
-    dob,
-    address,
-    pin,
-    source: 'Secure QR'
-  };
-}
-
-async function parseSecureQr(raw) {
-  const digits = raw.replace(/\s+/g, '');
-  if (!/^\d{50,}$/.test(digits)) {
-    return null;
-  }
-  let big;
-  try {
-    big = BigInt(digits);
+    return {
+      username: cleanText(parsed.username || parsed.user || parsed.name),
+      dob: cleanText(parsed.dob || parsed.dateOfBirth || parsed.birth || parsed.birthDate),
+      age: cleanText(parsed.age),
+      gender: normalizeGender(parsed.gender),
+      mobile: cleanPhone(parsed.mobile || parsed.phone || parsed.phoneNumber),
+      email: cleanEmail(parsed.email || parsed.mail)
+    };
   } catch (error) {
     return null;
   }
-
-  const bytes = bigIntToBytes(big);
-  const inflated = await inflateBytes(bytes);
-  if (!inflated) {
-    return null;
-  }
-  return parseSecureQrBytes(inflated);
 }
 
-async function parseAadhaarPayload(raw) {
+function parseKeyValuePayload(raw) {
+  if (!/[=:]/.test(raw)) {
+    return null;
+  }
+  const record = {};
+  const regex = /([^:=;\n|,]+)\s*[:=]\s*([^;\n|,]+)/g;
+  let match;
+  while ((match = regex.exec(raw)) !== null) {
+    const key = match[1].trim().toLowerCase();
+    const value = match[2].trim();
+    if (!key) {
+      continue;
+    }
+    record[key] = value;
+  }
+  if (!Object.keys(record).length) {
+    return null;
+  }
+  return {
+    username: cleanText(record.username || record.user || record.name),
+    dob: cleanText(record.dob || record.dateofbirth || record.birth || record.birthdate),
+    age: cleanText(record.age),
+    gender: normalizeGender(record.gender),
+    mobile: cleanPhone(record.mobile || record.phone || record.phonenumber),
+    email: cleanEmail(record.email || record.mail)
+  };
+}
+
+function parseDelimitedPayload(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let delimiter = null;
+  if (trimmed.includes('|')) {
+    delimiter = '|';
+  } else if (trimmed.includes(',')) {
+    delimiter = ',';
+  } else if (trimmed.includes(';')) {
+    delimiter = ';';
+  } else {
+    return null;
+  }
+
+  const parts = trimmed.split(delimiter).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 6) {
+    return null;
+  }
+
+  const [username, dob, age, gender, mobile, email] = parts;
+  return {
+    username: cleanText(username),
+    dob: cleanText(dob),
+    age: cleanText(age),
+    gender: normalizeGender(gender),
+    mobile: cleanPhone(mobile),
+    email: cleanEmail(email)
+  };
+}
+
+function parseQrPayload(raw) {
   const trimmed = (raw || '').trim();
   if (!trimmed) {
     return null;
   }
 
-  const xmlRecord = parseXmlPayload(trimmed);
-  if (xmlRecord) {
-    return xmlRecord;
+  const jsonRecord = parseJsonPayload(trimmed);
+  if (jsonRecord) {
+    return jsonRecord;
   }
 
-  const secureRecord = await parseSecureQr(trimmed);
-  if (secureRecord) {
-    return secureRecord;
+  const kvRecord = parseKeyValuePayload(trimmed);
+  if (kvRecord) {
+    return kvRecord;
+  }
+
+  const delimitedRecord = parseDelimitedPayload(trimmed);
+  if (delimitedRecord) {
+    return delimitedRecord;
   }
 
   return null;
+}
+
+function isRecordUsable(record) {
+  if (!record) {
+    return false;
+  }
+  return Boolean(record.username || record.email || record.mobile);
 }
 
 async function handleScanResult(value) {
@@ -571,55 +439,54 @@ async function handleScanResult(value) {
   state.lastValue = value;
   state.lastValueTs = now;
 
-  const compact = (value || '').replace(/\s+/g, '');
-  const looksNumeric = /^\d{50,}$/.test(compact);
-  if (looksNumeric && !('DecompressionStream' in window)) {
-    setStatus('Secure QR needs a compatible browser to decode.', 'error');
-    return;
-  }
-
-  const record = await parseAadhaarPayload(value);
-  if (!record) {
-    setStatus(looksNumeric ? 'Secure QR could not be decoded.' : 'Not an Aadhaar QR format.', 'error');
+  const record = parseQrPayload(value);
+  if (!isRecordUsable(record)) {
+    setStatus('QR format not recognized.', 'error');
     return;
   }
 
   upsertRecord(record);
 }
 
-function updateCapabilityBadge() {
-  if (!window.isSecureContext) {
-    el.capabilityBadge.textContent = 'Requires HTTPS';
-    el.capabilityBadge.classList.add('neutral');
-    return false;
+function loadRecords() {
+  try {
+    const raw = localStorage.getItem(config.storageKey);
+    if (!raw) {
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return;
+    }
+    parsed.forEach((entry) => {
+      if (!entry || !entry.key) {
+        return;
+      }
+      const record = {
+        username: cleanText(entry.username),
+        dob: cleanText(entry.dob),
+        age: cleanText(entry.age),
+        gender: normalizeGender(entry.gender),
+        mobile: cleanPhone(entry.mobile),
+        email: cleanEmail(entry.email)
+      };
+      state.records.set(entry.key, record);
+      state.order.push(entry.key);
+    });
+  } catch (error) {
+    setStatus('Stored data could not be loaded.', 'error');
   }
-
-  if (scanner.isBarcodeSupported()) {
-    el.capabilityBadge.textContent = 'BarcodeDetector ready';
-    el.capabilityBadge.classList.remove('neutral');
-    return true;
-  }
-
-  if (scanner.isJsQrSupported()) {
-    el.capabilityBadge.textContent = 'Fallback ready (jsQR)';
-    el.capabilityBadge.classList.remove('neutral');
-    return true;
-  }
-
-  el.capabilityBadge.textContent = 'Scanner not supported';
-  el.capabilityBadge.classList.add('neutral');
-  return false;
 }
 
 function queueGestureStart() {
-  if (awaitingGesture) {
+  if (state.awaitingGesture) {
     return;
   }
-  awaitingGesture = true;
+  state.awaitingGesture = true;
   document.addEventListener(
     'click',
     async () => {
-      awaitingGesture = false;
+      state.awaitingGesture = false;
       await startScan();
     },
     { once: true }
@@ -667,7 +534,9 @@ function attachEvents() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       stopScan();
+      return;
     }
+    startScan().catch(() => undefined);
   });
   window.addEventListener('pagehide', stopScan);
   window.addEventListener('beforeunload', () => {
@@ -686,9 +555,8 @@ function registerServiceWorker() {
 }
 
 async function init() {
-  const badgeOk = updateCapabilityBadge();
-  if (!badgeOk) {
-    setStatus('Scanner unavailable.', 'error');
+  if (!window.isSecureContext) {
+    setStatus('Secure context required.', 'error');
     return;
   }
   const detectorReady = await scanner.initDetector();
@@ -696,6 +564,8 @@ async function init() {
     setStatus('Scanner unavailable.', 'error');
     return;
   }
+  loadRecords();
+  renderRecords();
   setStatus('Ready.');
   startScan().catch(() => undefined);
 }

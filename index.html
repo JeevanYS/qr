@@ -16,8 +16,8 @@
     <div class="app">
       <header class="app-header">
         <div>
-          <p class="eyebrow">Aadhaar QR</p>
-          <h1>Aadhaar Scanner</h1>
+          <p class="eyebrow">QR Collector</p>
+          <h1>QR Data Store</h1>
         </div>
         <div class="status" id="status" role="status" aria-live="polite">Initializing...</div>
       </header>
@@ -25,9 +25,6 @@
       <section class="panel">
         <div class="panel-header">
           <h2>Live Scan</h2>
-          <div class="badges">
-            <span class="badge" id="capabilityBadge">Checking camera...</span>
-          </div>
         </div>
         <div class="video-wrap">
           <video id="camera" autoplay muted playsinline></video>
@@ -39,7 +36,7 @@
 
       <section class="panel">
         <div class="panel-header">
-          <h2>Aadhaar Records</h2>
+          <h2>Stored Records</h2>
           <div class="badges">
             <span class="badge neutral" id="recordsBadge">0 records</span>
           </div>
@@ -48,12 +45,12 @@
           <table class="records-table" aria-live="polite">
             <thead>
               <tr>
-                <th>UID / Ref ID</th>
-                <th>Name</th>
+                <th>Username</th>
+                <th>Date of Birth</th>
+                <th>Age</th>
                 <th>Gender</th>
-                <th>DOB / YoB</th>
-                <th>Address</th>
-                <th>Last Seen</th>
+                <th>Mobile</th>
+                <th>Email</th>
               </tr>
             </thead>
             <tbody id="recordsBody">
